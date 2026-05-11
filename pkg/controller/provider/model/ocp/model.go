@@ -205,11 +205,13 @@ const (
 	RolePrimary    RoleType     = "primary"
 	RoleSecondary  RoleType     = "secondary"
 	OvnOverlayType NadType      = "ovn-k8s-cni-overlay"
+	CalicoCNIType  NadType      = "calico"
 )
 
-// NetworkConfig represents the structure of the OVN-Kubernetes CNI configuration JSON.
-// The `json:"..."` tags are used by the encoding/json package to map the JSON keys
-// to the struct fields during marshalling and unmarshalling.
+// NetworkConfig represents the parsed shape of a NAD's CNI configuration JSON
+// for the fields Forklift inspects. Today this covers OVN-Kubernetes UDN fields
+// and Calico L2 Network references; other CNIs are unmarshalled into a mostly
+// zero-valued struct (encoding/json silently ignores unknown keys).
 type NetworkConfig struct {
 	AllowPersistentIPs bool         `json:"allowPersistentIPs"`
 	CNIVersion         string       `json:"cniVersion"`
@@ -220,9 +222,28 @@ type NetworkConfig struct {
 	Subnets            string       `json:"subnets"`
 	Topology           TopologyType `json:"topology"`
 	Type               NadType      `json:"type"`
+
+	// Calico-specific fields:
+	// Network names a projectcalico.org/v3 Network resource and is the signal
+	// selecting Calico's L2 dispatch path. Optional: Calico NADs without this
+	// field use the existing L3 routed behaviour and are treated as plain
+	// Multus NADs by Forklift.
+	Network string `json:"network,omitempty"`
+	// VLAN is the 802.1Q VLAN ID (1-4094) selecting which entry of the
+	// referenced Network's spec.l2Bridge.vlans this NAD attaches to. Zero
+	// means "unspecified" — valid only when the Network has exactly one
+	// VLAN entry, in which case that entry is used implicitly.
+	VLAN uint16 `json:"vlan,omitempty"`
 }
 
 func (m *NetworkConfig) IsUnsupportedUdn() bool {
 	return m.Type == OvnOverlayType &&
 		(m.Role == RolePrimary || m.Topology == TopologyLayer3)
+}
+
+// IsCalicoL2 reports whether this NAD config attaches workloads to a Calico
+// Layer-2 Network resource. The "network" field naming the projectcalico.org/v3
+// Network CR is the authoritative L2 signal — Calico L3 NADs do not set it.
+func (m *NetworkConfig) IsCalicoL2() bool {
+	return m.Type == CalicoCNIType && m.Network != ""
 }
