@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	k8snet "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	v1beta1 "github.com/kubev2v/forklift/pkg/apis/forklift/v1beta1"
 	"github.com/kubev2v/forklift/pkg/apis/forklift/v1beta1/ref"
 	plancontext "github.com/kubev2v/forklift/pkg/controller/plan/context"
@@ -20,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	cnv "kubevirt.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -594,6 +596,94 @@ var _ = Describe("vSphere builder", func() {
 			},
 		),
 	)
+
+	Context("mapNetworks Calico annotations", func() {
+		const (
+			netID     = "net-id-1"
+			netKey    = "net-key-1"
+			ifname    = "net-0"
+			nicMAC    = "aa:bb:cc:dd:ee:01"
+			nicIP     = "10.0.0.5"
+			nadName   = "calico-l2-nad"
+			hwAnnKey  = "cni.projectcalico.org/net-0.hwAddr"
+			ipsAnnKey = "cni.projectcalico.org/net-0.ipAddrsNoIpam"
+		)
+		buildAndCall := func(nadConfig string, preserveIPs bool) (map[string]string, error) {
+			nad := &k8snet.NetworkAttachmentDefinition{
+				ObjectMeta: meta.ObjectMeta{Namespace: "test", Name: nadName},
+				Spec:       k8snet.NetworkAttachmentDefinitionSpec{Config: nadConfig},
+			}
+			builder := createBuilder(nad)
+			builder.Source.Inventory = &mockInventory{
+				networks: map[string]model.Network{
+					netID: {Resource: model.Resource{ID: netID}, Variant: vsphere.NetDvPortGroup, Key: netKey},
+				},
+			}
+			builder.Plan.Spec.PreserveStaticIPs = preserveIPs
+			builder.Context.Map.Network = &v1beta1.NetworkMap{
+				Spec: v1beta1.NetworkMapSpec{
+					Map: []v1beta1.NetworkPair{{
+						Source: ref.Ref{ID: netID},
+						Destination: v1beta1.DestinationNetwork{
+							Type: "multus", Namespace: "test", Name: nadName,
+						},
+					}},
+				},
+			}
+			vm := &model.VM{
+				NICs: []vsphere.NIC{{
+					Network:   vsphere.Ref{ID: netKey},
+					MAC:       nicMAC,
+					DeviceKey: 4001,
+				}},
+				GuestNetworks: []vsphere.GuestNetwork{{
+					MAC:            nicMAC,
+					IP:             nicIP,
+					DeviceConfigId: 4001,
+					Origin:         ManualOrigin,
+					PrefixLength:   24,
+				}},
+			}
+			spec := &cnv.VirtualMachineSpec{Template: &cnv.VirtualMachineInstanceTemplateSpec{}}
+			err := builder.mapNetworks(vm, spec)
+			return spec.Template.ObjectMeta.Annotations, err
+		}
+
+		It("emits MAC and IP annotations for a Calico L2 NAD with PreserveStaticIPs", func() {
+			annotations, err := buildAndCall(`{"type":"calico","network":"datacenter-vlans","vlan":100}`, true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(annotations).To(HaveKeyWithValue(hwAnnKey, nicMAC))
+			Expect(annotations).To(HaveKeyWithValue(ipsAnnKey, fmt.Sprintf(`["%s"]`, nicIP)))
+		})
+
+		It("emits MAC only when PreserveStaticIPs is false", func() {
+			annotations, err := buildAndCall(`{"type":"calico","network":"datacenter-vlans"}`, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(annotations).To(HaveKeyWithValue(hwAnnKey, nicMAC))
+			Expect(annotations).NotTo(HaveKey(ipsAnnKey))
+		})
+
+		It("emits nothing for a Calico L3 NAD (no network field)", func() {
+			annotations, err := buildAndCall(`{"type":"calico"}`, true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(annotations).NotTo(HaveKey(hwAnnKey))
+			Expect(annotations).NotTo(HaveKey(ipsAnnKey))
+		})
+
+		It("emits nothing for an OVN-K UDN NAD", func() {
+			annotations, err := buildAndCall(`{"type":"ovn-k8s-cni-overlay","subnets":"10.0.0.0/24"}`, true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(annotations).NotTo(HaveKey(hwAnnKey))
+			Expect(annotations).NotTo(HaveKey(ipsAnnKey))
+		})
+
+		It("emits nothing for a NAD with empty Spec.Config", func() {
+			annotations, err := buildAndCall("", true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(annotations).NotTo(HaveKey(hwAnnKey))
+			Expect(annotations).NotTo(HaveKey(ipsAnnKey))
+		})
+	})
 })
 
 //nolint:errcheck
@@ -602,6 +692,7 @@ func createBuilder(objs ...runtime.Object) *Builder {
 	_ = v1.AddToScheme(scheme)
 	_ = core.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
+	_ = k8snet.AddToScheme(scheme)
 	v1beta1.SchemeBuilder.AddToScheme(scheme)
 	client := fake.NewClientBuilder().
 		WithScheme(scheme).

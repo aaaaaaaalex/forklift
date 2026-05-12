@@ -752,6 +752,8 @@ func (r *Builder) mapNetworks(vm *model.VM, object *cnv.VirtualMachineSpec) (err
 	var kNetworks []cnv.Network
 	var kInterfaces []cnv.Interface
 	var staticIpInterfaces = make(map[string][]string)
+	var calicoMacInterfaces = map[string]string{}
+	var calicoIpInterfaces = map[string][]string{}
 
 	numNetworks := 0
 	hasUDN := r.Plan.DestinationHasUdnNetwork(r.Destination)
@@ -808,6 +810,20 @@ func (r *Builder) mapNetworks(vm *model.VM, object *cnv.VirtualMachineSpec) (err
 				NetworkName: path.Join(mapped.Destination.Namespace, mapped.Destination.Name),
 			}
 			kInterface.Bridge = &cnv.InterfaceBridge{}
+
+			cfg, nadErr := planbase.FetchAndParseNAD(context.TODO(), r.Destination.Client,
+				mapped.Destination.Namespace, mapped.Destination.Name)
+			if nadErr != nil {
+				return nadErr
+			}
+			if cfg != nil && cfg.IsCalicoL2() {
+				calicoMacInterfaces[networkName] = nic.MAC
+				if r.Plan.Spec.PreserveStaticIPs {
+					if ips := r.findInterfaceIps(vm, nic); len(ips) > 0 {
+						calicoIpInterfaces[networkName] = ips
+					}
+				}
+			}
 		}
 
 		kNetworks = append(kNetworks, kNetwork)
@@ -827,6 +843,15 @@ func (r *Builder) mapNetworks(vm *model.VM, object *cnv.VirtualMachineSpec) (err
 			object.Template.ObjectMeta.Annotations = make(map[string]string)
 		}
 		object.Template.ObjectMeta.Annotations[planbase.AnnStaticUdnIp] = string(staticIpInterfacesAnnotation)
+	}
+
+	for ifname, mac := range calicoMacInterfaces {
+		planbase.SetCalicoMAC(&object.Template.ObjectMeta, ifname, mac)
+	}
+	for ifname, ips := range calicoIpInterfaces {
+		if err = planbase.SetCalicoStaticIPs(&object.Template.ObjectMeta, ifname, ips); err != nil {
+			return
+		}
 	}
 	return
 }
