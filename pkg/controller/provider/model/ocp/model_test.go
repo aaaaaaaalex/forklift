@@ -83,7 +83,7 @@ func TestNetworkConfig_UnmarshalCalico(t *testing.T) {
 	}
 }
 
-func TestNetworkConfig_IsCalicoL2(t *testing.T) {
+func TestNetworkConfig_ReferencesCalicoNetwork(t *testing.T) {
 	tests := []struct {
 		name string
 		cfg  NetworkConfig
@@ -117,8 +117,8 @@ func TestNetworkConfig_IsCalicoL2(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.cfg.IsCalicoL2(); got != tt.want {
-				t.Errorf("IsCalicoL2() = %v, want %v", got, tt.want)
+			if got := tt.cfg.ReferencesCalicoNetwork(); got != tt.want {
+				t.Errorf("ReferencesCalicoNetwork() = %v, want %v", got, tt.want)
 			}
 		})
 	}

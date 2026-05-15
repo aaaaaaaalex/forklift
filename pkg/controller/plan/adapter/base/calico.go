@@ -13,15 +13,12 @@ import (
 
 const (
 	CalicoAnnHwAddrFmt = "cni.projectcalico.org/%s.hwAddr"
-	CalicoAnnIPsFmt    = "cni.projectcalico.org/%s.ipAddrsNoIpam"
+	CalicoAnnIPsFmt    = "cni.projectcalico.org/%s.ipAddrs"
 )
 
 // FetchAndParseNAD GETs the NetworkAttachmentDefinition at namespace/name from
 // the destination cluster and unmarshals its Spec.Config into a
-// model.NetworkConfig. A NotFound error is propagated unchanged; the plan
-// validator is responsible for catching missing NADs before build, and a
-// NotFound at this point is a race or validation gap worth surfacing loudly.
-// Callers that need soft handling can check k8serr.IsNotFound on the result.
+// model.NetworkConfig.
 // An empty Spec.Config yields a zero-valued NetworkConfig and no error.
 func FetchAndParseNAD(ctx context.Context, c client.Client, namespace, name string) (*model.NetworkConfig, error) {
 	nad := &k8snet.NetworkAttachmentDefinition{}
@@ -49,8 +46,8 @@ func SetCalicoMAC(m *meta.ObjectMeta, ifname, mac string) {
 }
 
 // SetCalicoStaticIPs JSON-marshals ips and writes the
-// cni.projectcalico.org/<ifname>.ipAddrsNoIpam annotation. No-op when ips is
-// empty. Lazy-inits Annotations when nil.
+// cni.projectcalico.org/<ifname>.ipAddrs annotation. No-op when ips is empty.
+// Lazy-inits Annotations when nil.
 func SetCalicoStaticIPs(m *meta.ObjectMeta, ifname string, ips []string) error {
 	if len(ips) == 0 {
 		return nil

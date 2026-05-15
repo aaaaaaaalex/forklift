@@ -74,8 +74,8 @@ func TestFetchAndParseNAD(t *testing.T) {
 				if c.VLAN != 100 {
 					t.Errorf("VLAN = %d, want 100", c.VLAN)
 				}
-				if !c.IsCalicoL2() {
-					t.Errorf("IsCalicoL2() = false, want true")
+				if !c.ReferencesCalicoNetwork() {
+					t.Errorf("ReferencesCalicoNetwork() = false, want true")
 				}
 			},
 		},
@@ -87,8 +87,8 @@ func TestFetchAndParseNAD(t *testing.T) {
 				if c.Type != model.OvnOverlayType {
 					t.Errorf("Type = %q, want %q", c.Type, model.OvnOverlayType)
 				}
-				if c.IsCalicoL2() {
-					t.Errorf("IsCalicoL2() = true, want false")
+				if c.ReferencesCalicoNetwork() {
+					t.Errorf("ReferencesCalicoNetwork() = true, want false")
 				}
 			},
 		},
@@ -100,8 +100,8 @@ func TestFetchAndParseNAD(t *testing.T) {
 				if c.Type != "" || c.Network != "" || c.VLAN != 0 {
 					t.Errorf("got non-zero config from empty Spec.Config: %+v", c)
 				}
-				if c.IsCalicoL2() {
-					t.Errorf("IsCalicoL2() = true on zero config, want false")
+				if c.ReferencesCalicoNetwork() {
+					t.Errorf("ReferencesCalicoNetwork() = true on zero config, want false")
 				}
 			},
 		},
@@ -202,21 +202,21 @@ func TestSetCalicoStaticIPs(t *testing.T) {
 			name:    "SingleIP",
 			ifname:  "net-0",
 			ips:     []string{"10.0.0.5"},
-			wantKey: "cni.projectcalico.org/net-0.ipAddrsNoIpam",
+			wantKey: "cni.projectcalico.org/net-0.ipAddrs",
 			wantVal: `["10.0.0.5"]`,
 		},
 		{
 			name:    "MultipleIPs",
 			ifname:  "net-1",
 			ips:     []string{"10.0.0.5", "10.0.0.6"},
-			wantKey: "cni.projectcalico.org/net-1.ipAddrsNoIpam",
+			wantKey: "cni.projectcalico.org/net-1.ipAddrs",
 			wantVal: `["10.0.0.5","10.0.0.6"]`,
 		},
 		{
 			name:       "EmptySliceIsNoOp",
 			ifname:     "net-0",
 			ips:        nil,
-			wantKey:    "cni.projectcalico.org/net-0.ipAddrsNoIpam",
+			wantKey:    "cni.projectcalico.org/net-0.ipAddrs",
 			wantMissed: true,
 		},
 		{
@@ -224,7 +224,7 @@ func TestSetCalicoStaticIPs(t *testing.T) {
 			initial: map[string]string{"foo": "bar"},
 			ifname:  "net-0",
 			ips:     []string{"10.0.0.5"},
-			wantKey: "cni.projectcalico.org/net-0.ipAddrsNoIpam",
+			wantKey: "cni.projectcalico.org/net-0.ipAddrs",
 			wantVal: `["10.0.0.5"]`,
 		},
 	}

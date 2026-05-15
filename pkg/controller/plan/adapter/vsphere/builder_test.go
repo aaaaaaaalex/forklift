@@ -606,7 +606,7 @@ var _ = Describe("vSphere builder", func() {
 			nicIP     = "10.0.0.5"
 			nadName   = "calico-l2-nad"
 			hwAnnKey  = "cni.projectcalico.org/net-0.hwAddr"
-			ipsAnnKey = "cni.projectcalico.org/net-0.ipAddrsNoIpam"
+			ipsAnnKey = "cni.projectcalico.org/net-0.ipAddrs"
 		)
 		buildAndCall := func(nadConfig string, preserveIPs bool) (map[string]string, error) {
 			nad := &k8snet.NetworkAttachmentDefinition{
@@ -682,6 +682,144 @@ var _ = Describe("vSphere builder", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(annotations).NotTo(HaveKey(hwAnnKey))
 			Expect(annotations).NotTo(HaveKey(ipsAnnKey))
+		})
+
+		// Multi-NIC support — the builder iterates vm.NICs and emits a per-NIC
+		// kInterface (net-0, net-1, …) plus per-interface Calico annotations.
+		// runMulti is a more general helper accepting one entry per NIC.
+		type nicSpec struct {
+			netID     string // source network ID (matched via mockInventory)
+			mac       string
+			deviceKey int32
+			ip        string // empty → no GuestNetworks entry for this NIC
+		}
+		type nadSpec struct {
+			name   string
+			config string
+		}
+		runMulti := func(nics []nicSpec, nads []nadSpec, preserveIPs bool, mapPairs []v1beta1.NetworkPair) (map[string]string, error) {
+			objs := []runtime.Object{}
+			for _, n := range nads {
+				objs = append(objs, &k8snet.NetworkAttachmentDefinition{
+					ObjectMeta: meta.ObjectMeta{Namespace: "test", Name: n.name},
+					Spec:       k8snet.NetworkAttachmentDefinitionSpec{Config: n.config},
+				})
+			}
+			builder := createBuilder(objs...)
+			networks := map[string]model.Network{}
+			for _, n := range nics {
+				networks[n.netID] = model.Network{
+					Resource: model.Resource{ID: n.netID},
+					Variant:  vsphere.NetDvPortGroup,
+					Key:      n.netID, // match by ID in findNetworkMapping
+				}
+			}
+			builder.Source.Inventory = &mockInventory{networks: networks}
+			builder.Plan.Spec.PreserveStaticIPs = preserveIPs
+			builder.Context.Map.Network = &v1beta1.NetworkMap{
+				Spec: v1beta1.NetworkMapSpec{Map: mapPairs},
+			}
+			vmNICs := make([]vsphere.NIC, 0, len(nics))
+			vmGuestNets := []vsphere.GuestNetwork{}
+			for _, n := range nics {
+				vmNICs = append(vmNICs, vsphere.NIC{
+					Network:   vsphere.Ref{ID: n.netID},
+					MAC:       n.mac,
+					DeviceKey: n.deviceKey,
+				})
+				if n.ip != "" {
+					vmGuestNets = append(vmGuestNets, vsphere.GuestNetwork{
+						MAC:            n.mac,
+						IP:             n.ip,
+						DeviceConfigId: n.deviceKey,
+						Origin:         ManualOrigin,
+						PrefixLength:   24,
+					})
+				}
+			}
+			vm := &model.VM{NICs: vmNICs, GuestNetworks: vmGuestNets}
+			spec := &cnv.VirtualMachineSpec{Template: &cnv.VirtualMachineInstanceTemplateSpec{}}
+			err := builder.mapNetworks(vm, spec)
+			return spec.Template.ObjectMeta.Annotations, err
+		}
+		calicoL2 := func(name string) string {
+			return fmt.Sprintf(`{"type":"calico","network":"%s"}`, name)
+		}
+
+		It("emits per-interface annotations for 3 NICs on 3 distinct Calico L2 NADs", func() {
+			nics := []nicSpec{
+				{netID: "src-a", mac: "aa:bb:cc:00:00:01", deviceKey: 4001, ip: "10.0.0.5"},
+				{netID: "src-b", mac: "aa:bb:cc:00:00:02", deviceKey: 4002, ip: "10.0.1.5"},
+				{netID: "src-c", mac: "aa:bb:cc:00:00:03", deviceKey: 4003, ip: "10.0.2.5"},
+			}
+			nads := []nadSpec{
+				{name: "nad-a", config: calicoL2("net-a")},
+				{name: "nad-b", config: calicoL2("net-b")},
+				{name: "nad-c", config: calicoL2("net-c")},
+			}
+			pairs := []v1beta1.NetworkPair{
+				{Source: ref.Ref{ID: "src-a"}, Destination: v1beta1.DestinationNetwork{Type: "multus", Namespace: "test", Name: "nad-a"}},
+				{Source: ref.Ref{ID: "src-b"}, Destination: v1beta1.DestinationNetwork{Type: "multus", Namespace: "test", Name: "nad-b"}},
+				{Source: ref.Ref{ID: "src-c"}, Destination: v1beta1.DestinationNetwork{Type: "multus", Namespace: "test", Name: "nad-c"}},
+			}
+			ann, err := runMulti(nics, nads, true, pairs)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ann).To(HaveKeyWithValue("cni.projectcalico.org/net-0.hwAddr", "aa:bb:cc:00:00:01"))
+			Expect(ann).To(HaveKeyWithValue("cni.projectcalico.org/net-1.hwAddr", "aa:bb:cc:00:00:02"))
+			Expect(ann).To(HaveKeyWithValue("cni.projectcalico.org/net-2.hwAddr", "aa:bb:cc:00:00:03"))
+			Expect(ann).To(HaveKeyWithValue("cni.projectcalico.org/net-0.ipAddrs", `["10.0.0.5"]`))
+			Expect(ann).To(HaveKeyWithValue("cni.projectcalico.org/net-1.ipAddrs", `["10.0.1.5"]`))
+			Expect(ann).To(HaveKeyWithValue("cni.projectcalico.org/net-2.ipAddrs", `["10.0.2.5"]`))
+		})
+
+		It("emits 3 distinct annotation sets when multiple NICs share the same Calico NAD", func() {
+			// Builder-level test: the cluster validator (plan/validation.go's
+			// VMDuplicateNADMappings) would block this in practice, but the
+			// builder itself must still produce per-interface keys correctly —
+			// this guards against regressions if/when the validator is relaxed
+			// for Calico destinations.
+			nics := []nicSpec{
+				{netID: "src-a", mac: "aa:bb:cc:00:00:01", deviceKey: 4001},
+				{netID: "src-b", mac: "aa:bb:cc:00:00:02", deviceKey: 4002},
+				{netID: "src-c", mac: "aa:bb:cc:00:00:03", deviceKey: 4003},
+			}
+			nads := []nadSpec{{name: "shared-nad", config: calicoL2("shared-net")}}
+			pairs := []v1beta1.NetworkPair{
+				{Source: ref.Ref{ID: "src-a"}, Destination: v1beta1.DestinationNetwork{Type: "multus", Namespace: "test", Name: "shared-nad"}},
+				{Source: ref.Ref{ID: "src-b"}, Destination: v1beta1.DestinationNetwork{Type: "multus", Namespace: "test", Name: "shared-nad"}},
+				{Source: ref.Ref{ID: "src-c"}, Destination: v1beta1.DestinationNetwork{Type: "multus", Namespace: "test", Name: "shared-nad"}},
+			}
+			ann, err := runMulti(nics, nads, false, pairs)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ann).To(HaveKeyWithValue("cni.projectcalico.org/net-0.hwAddr", "aa:bb:cc:00:00:01"))
+			Expect(ann).To(HaveKeyWithValue("cni.projectcalico.org/net-1.hwAddr", "aa:bb:cc:00:00:02"))
+			Expect(ann).To(HaveKeyWithValue("cni.projectcalico.org/net-2.hwAddr", "aa:bb:cc:00:00:03"))
+		})
+
+		It("gates per-NIC: emits annotations only for the NICs whose destination NAD is Calico L2", func() {
+			// NIC 0: Calico L2 → expect annotations.
+			// NIC 1: plain Multus, no CNI config → expect nothing.
+			// NIC 2: Calico L3 (type=calico but no `network` field) → expect nothing.
+			nics := []nicSpec{
+				{netID: "src-calico", mac: "aa:bb:cc:00:00:01", deviceKey: 4001},
+				{netID: "src-plain", mac: "aa:bb:cc:00:00:02", deviceKey: 4002},
+				{netID: "src-l3", mac: "aa:bb:cc:00:00:03", deviceKey: 4003},
+			}
+			nads := []nadSpec{
+				{name: "calico-nad", config: calicoL2("net-a")},
+				{name: "plain-nad", config: ""},
+				{name: "calico-l3-nad", config: `{"type":"calico"}`},
+			}
+			pairs := []v1beta1.NetworkPair{
+				{Source: ref.Ref{ID: "src-calico"}, Destination: v1beta1.DestinationNetwork{Type: "multus", Namespace: "test", Name: "calico-nad"}},
+				{Source: ref.Ref{ID: "src-plain"}, Destination: v1beta1.DestinationNetwork{Type: "multus", Namespace: "test", Name: "plain-nad"}},
+				{Source: ref.Ref{ID: "src-l3"}, Destination: v1beta1.DestinationNetwork{Type: "multus", Namespace: "test", Name: "calico-l3-nad"}},
+			}
+			ann, err := runMulti(nics, nads, false, pairs)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ann).To(HaveKeyWithValue("cni.projectcalico.org/net-0.hwAddr", "aa:bb:cc:00:00:01"))
+			Expect(ann).NotTo(HaveKey("cni.projectcalico.org/net-1.hwAddr"))
+			Expect(ann).NotTo(HaveKey("cni.projectcalico.org/net-2.hwAddr"))
 		})
 	})
 })

@@ -349,7 +349,6 @@ func (h Handler) NetworkAttachmentDefinitions(ctx *gin.Context, provider *api.Pr
 					log.Info("NAD is not supported UDN configuration, skipping", "nad", nad, "networkConfig", networkConfig)
 					continue
 				}
-				// Either supported UDN, or non-OVN CNI (e.g. Calico).
 			} else {
 				log.Error(err, "Failed to unmarshal network config, ignoring as the NAD does not match UDN specification")
 			}

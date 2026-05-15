@@ -816,7 +816,7 @@ func (r *Builder) mapNetworks(vm *model.VM, object *cnv.VirtualMachineSpec) (err
 			if nadErr != nil {
 				return nadErr
 			}
-			if cfg != nil && cfg.IsCalicoL2() {
+			if cfg != nil && cfg.ReferencesCalicoNetwork() {
 				calicoMacInterfaces[networkName] = nic.MAC
 				if r.Plan.Spec.PreserveStaticIPs {
 					if ips := r.findInterfaceIps(vm, nic); len(ips) > 0 {
