@@ -736,7 +736,7 @@ func isIPv4(address string) bool {
 	return ip != nil && ip.To4() != nil
 }
 
-func (r *Builder) findInterfaceIps(vm *model.VM, nic vsphere.NIC) []string {
+func findInterfaceIps(vm *model.VM, nic vsphere.NIC) []string {
 	var interfaceIps []string
 	for _, net := range vm.GuestNetworks {
 		if net.DeviceConfigId == nic.DeviceKey {
@@ -797,7 +797,7 @@ func (r *Builder) mapNetworks(vm *model.VM, object *cnv.VirtualMachineSpec) (err
 					Name: planbase.UdnL2bridge,
 				}
 				if r.Plan.Spec.PreserveStaticIPs {
-					ips := r.findInterfaceIps(vm, nic)
+					ips := findInterfaceIps(vm, nic)
 					if len(ips) > 0 {
 						staticIpInterfaces[networkName] = ips
 					}
@@ -819,7 +819,7 @@ func (r *Builder) mapNetworks(vm *model.VM, object *cnv.VirtualMachineSpec) (err
 			if cfg != nil && cfg.ReferencesCalicoNetwork() {
 				calicoMacInterfaces[networkName] = nic.MAC
 				if r.Plan.Spec.PreserveStaticIPs {
-					if ips := r.findInterfaceIps(vm, nic); len(ips) > 0 {
+					if ips := findInterfaceIps(vm, nic); len(ips) > 0 {
 						calicoIpInterfaces[networkName] = ips
 					}
 				}
@@ -857,10 +857,14 @@ func (r *Builder) mapNetworks(vm *model.VM, object *cnv.VirtualMachineSpec) (err
 }
 
 func (r *Builder) findNetworkMapping(nic vsphere.NIC, netMap []api.NetworkPair) *api.NetworkPair {
+	return findNetworkMapping(r.Source.Inventory, nic, netMap)
+}
+
+func findNetworkMapping(inventory web.Client, nic vsphere.NIC, netMap []api.NetworkPair) *api.NetworkPair {
 	for i := range netMap {
 		candidate := &netMap[i]
 		network := &model.Network{}
-		if err := r.Source.Inventory.Find(network, candidate.Source); err != nil {
+		if err := inventory.Find(network, candidate.Source); err != nil {
 			continue
 		}
 

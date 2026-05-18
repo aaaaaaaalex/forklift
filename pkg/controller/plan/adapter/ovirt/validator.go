@@ -264,3 +264,9 @@ func (r *Validator) GuestToolsInstalled(vmRef ref.Ref) (ok bool, err error) {
 	ok = true
 	return
 }
+
+// CalicoIssues returns no issues. Non-vSphere providers aren't a target
+// for Calico-Network IP/MAC preservation today.
+func (r *Validator) CalicoIssues(_ ref.Ref, _ client.Client) ([]planbase.CalicoIssue, error) {
+	return nil, nil
+}

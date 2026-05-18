@@ -449,3 +449,9 @@ func (r *Validator) PVCNameTemplate(vmRef ref.Ref, pvcNameTemplate string) (ok b
 
 	return true, nil
 }
+
+// CalicoIssues returns no issues. Non-vSphere providers aren't a target
+// for Calico-Network IP/MAC preservation today.
+func (r *Validator) CalicoIssues(_ ref.Ref, _ k8sclient.Client) ([]planbase.CalicoIssue, error) {
+	return nil, nil
+}

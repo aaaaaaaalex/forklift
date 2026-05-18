@@ -3,7 +3,9 @@ package vsphere
 
 import (
 	"errors"
+	"fmt"
 
+	k8snet "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	v1beta1 "github.com/kubev2v/forklift/pkg/apis/forklift/v1beta1"
 	planapi "github.com/kubev2v/forklift/pkg/apis/forklift/v1beta1/plan"
 	"github.com/kubev2v/forklift/pkg/apis/forklift/v1beta1/ref"
@@ -13,9 +15,14 @@ import (
 	"github.com/kubev2v/forklift/pkg/controller/provider/web"
 	"github.com/kubev2v/forklift/pkg/controller/provider/web/base"
 	model "github.com/kubev2v/forklift/pkg/controller/provider/web/vsphere"
+	calicoclient "github.com/kubev2v/forklift/pkg/lib/client/calico"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 var ErrNotImplemented = errors.New("not implemented")
@@ -590,6 +597,229 @@ var _ = Describe("vsphere validation tests", func() {
 			validator := &Validator{Context: &ctx}
 			_, err := validator.NICNetworkRefs(ref.Ref{Name: "missing_from_inventory"})
 			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	Describe("Calico Network validation", func() {
+		// Reusable identifiers across cases.
+		const (
+			srcNetID = "src-1"
+			nadName  = "calico-nad"
+			nadNS    = "workloads"
+			netName  = "vlan100"
+		)
+
+		makeCalicoNAD := func(vlan int) *k8snet.NetworkAttachmentDefinition {
+			cfg := fmt.Sprintf(`{"type":"calico","network":"%s","vlan":%d}`, netName, vlan)
+			return &k8snet.NetworkAttachmentDefinition{
+				ObjectMeta: metav1.ObjectMeta{Name: nadName, Namespace: nadNS},
+				Spec:       k8snet.NetworkAttachmentDefinitionSpec{Config: cfg},
+			}
+		}
+		makeNetwork := func(spec map[string]interface{}) *unstructured.Unstructured {
+			u := &unstructured.Unstructured{}
+			u.SetGroupVersionKind(calicoclient.NetworkGVK)
+			u.SetName(netName)
+			if spec != nil {
+				_ = unstructured.SetNestedField(u.Object, spec, "spec")
+			}
+			return u
+		}
+		makeIPPool := func(name, cidr string) *unstructured.Unstructured {
+			u := &unstructured.Unstructured{}
+			u.SetGroupVersionKind(calicoclient.IPPoolGVK)
+			u.SetName(name)
+			_ = unstructured.SetNestedField(u.Object, cidr, "spec", "cidr")
+			return u
+		}
+		// L2Bridge spec helpers — VLAN 100 maps to subnet 10.100.0.0/24.
+		l2Single := map[string]interface{}{
+			"l2Bridge": map[string]interface{}{
+				"vlans": []interface{}{
+					map[string]interface{}{
+						"vlan":    map[string]interface{}{"id": int64(100)},
+						"subnets": []interface{}{map[string]interface{}{"cidr": "10.100.0.0/24"}},
+					},
+				},
+			},
+		}
+		l2Multi := map[string]interface{}{
+			"l2Bridge": map[string]interface{}{
+				"vlans": []interface{}{
+					map[string]interface{}{
+						"vlan":    map[string]interface{}{"id": int64(100)},
+						"subnets": []interface{}{map[string]interface{}{"cidr": "10.100.0.0/24"}},
+					},
+					map[string]interface{}{
+						"vlan":    map[string]interface{}{"id": int64(200)},
+						"subnets": []interface{}{map[string]interface{}{"cidr": "10.200.0.0/24"}},
+					},
+				},
+			},
+		}
+
+		// setup builds a Validator + fake client. nicIP is the NIC's guest IP,
+		// preserveIPs controls Plan.Spec.PreserveStaticIPs.
+		setup := func(nicIP string, preserveIPs bool, k8sObjs ...runtime.Object) (*Validator, client.Client, ref.Ref) {
+			scheme := runtime.NewScheme()
+			_ = k8snet.AddToScheme(scheme)
+			scheme.AddKnownTypeWithName(calicoclient.NetworkGVK, &unstructured.Unstructured{})
+			scheme.AddKnownTypeWithName(calicoclient.NetworkGVK.GroupVersion().WithKind("NetworkList"), &unstructured.UnstructuredList{})
+			scheme.AddKnownTypeWithName(calicoclient.IPPoolGVK, &unstructured.Unstructured{})
+			scheme.AddKnownTypeWithName(calicoclient.IPPoolGVK.GroupVersion().WithKind("IPPoolList"), &unstructured.UnstructuredList{})
+			c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(k8sObjs...).Build()
+
+			vm := model.VM{
+				VM1:  model.VM1{VM0: model.VM0{ID: "test-vm-id", Name: "test-vm"}},
+				NICs: []vsphere.NIC{{Network: vsphere.Ref{ID: srcNetID}, DeviceKey: 4001}},
+				GuestNetworks: []vsphere.GuestNetwork{
+					{IP: nicIP, DeviceConfigId: 4001},
+				},
+			}
+			inventory := &mockInventory{
+				vm: vm,
+				networks: map[string]model.Network{
+					srcNetID: {Resource: model.Resource{ID: srcNetID}, Variant: vsphere.NetDvPortGroup, Key: srcNetID},
+				},
+			}
+			plan := createPlan()
+			plan.Spec.PreserveStaticIPs = preserveIPs
+			plan.Referenced.Map.Network = &v1beta1.NetworkMap{
+				Spec: v1beta1.NetworkMapSpec{
+					Map: []v1beta1.NetworkPair{{
+						Source: ref.Ref{ID: srcNetID},
+						Destination: v1beta1.DestinationNetwork{
+							Type: planbase.Multus, Namespace: nadNS, Name: nadName,
+						},
+					}},
+				},
+			}
+			ctx := plancontext.Context{Plan: plan, Source: plancontext.Source{Inventory: inventory}}
+			return &Validator{Context: &ctx}, c, ref.Ref{Name: "test-vm-id", ID: "test-vm-id"}
+		}
+
+		// kinds extracts the set of issue kinds from a slice.
+		kinds := func(issues []planbase.CalicoIssue) []planbase.CalicoIssueKind {
+			out := make([]planbase.CalicoIssueKind, 0, len(issues))
+			for _, i := range issues {
+				out = append(out, i.Kind)
+			}
+			return out
+		}
+
+		It("returns no issues when NetworkMap is nil", func() {
+			v, c, vmRef := setup("10.100.0.5", true)
+			v.Plan.Referenced.Map.Network = nil
+			issues, err := v.CalicoIssues(vmRef, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(issues).To(BeEmpty())
+		})
+
+		It("happy path — no issues when Network, VLAN, IPPool and source IP all line up", func() {
+			v, c, vmRef := setup("10.100.0.5", true,
+				makeCalicoNAD(100), makeNetwork(l2Single),
+				makeIPPool("vlan100-pool", "10.100.0.0/24"),
+			)
+			issues, err := v.CalicoIssues(vmRef, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(issues).To(BeEmpty())
+		})
+
+		It("emits NetworkNotFound when the referenced Network is missing", func() {
+			v, c, vmRef := setup("10.100.0.5", true, makeCalicoNAD(100))
+			issues, err := v.CalicoIssues(vmRef, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(issues).To(ConsistOf(planbase.CalicoIssue{
+				Kind: planbase.CalicoIssueNetworkNotFound, Network: netName, VLAN: 100,
+			}))
+		})
+
+		It("emits NetworkHasNoL2Bridge when the Network exists but has no l2Bridge", func() {
+			v, c, vmRef := setup("10.100.0.5", true,
+				makeCalicoNAD(100), makeNetwork(map[string]interface{}{}),
+			)
+			issues, err := v.CalicoIssues(vmRef, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(kinds(issues)).To(ConsistOf(planbase.CalicoIssueNetworkHasNoL2Bridge))
+		})
+
+		It("emits VLANNotInNetwork when the NAD vlan ID doesn't match any entry", func() {
+			v, c, vmRef := setup("10.100.0.5", true,
+				makeCalicoNAD(999), makeNetwork(l2Single),
+			)
+			issues, err := v.CalicoIssues(vmRef, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(kinds(issues)).To(ConsistOf(planbase.CalicoIssueVLANNotInNetwork))
+		})
+
+		It("emits VLANAmbiguous when the NAD omits vlan and Network has multiple entries", func() {
+			v, c, vmRef := setup("10.100.0.5", true,
+				makeCalicoNAD(0), makeNetwork(l2Multi),
+			)
+			issues, err := v.CalicoIssues(vmRef, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(kinds(issues)).To(ConsistOf(planbase.CalicoIssueVLANAmbiguous))
+		})
+
+		It("emits VLANHasNoIPPool when no IPPool overlaps the VLAN subnet", func() {
+			v, c, vmRef := setup("10.100.0.5", false,
+				makeCalicoNAD(100), makeNetwork(l2Single),
+				makeIPPool("cluster-default", "10.0.0.0/8"), // pool too large
+			)
+			issues, err := v.CalicoIssues(vmRef, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(kinds(issues)).To(ConsistOf(planbase.CalicoIssueVLANHasNoIPPool))
+		})
+
+		It("emits IPNotInSubnet with the offending IP when preserveStaticIPs is on and source IP is outside the VLAN subnet", func() {
+			v, c, vmRef := setup("192.168.1.5", true,
+				makeCalicoNAD(100), makeNetwork(l2Single),
+				makeIPPool("vlan100-pool", "10.100.0.0/24"),
+			)
+			issues, err := v.CalicoIssues(vmRef, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(issues).To(ConsistOf(planbase.CalicoIssue{
+				Kind: planbase.CalicoIssueIPNotInSubnet, Network: netName, VLAN: 100, IP: "192.168.1.5",
+			}))
+		})
+
+		It("emits IPNotInIPPool with the offending IP when preserveStaticIPs is on and no eligible pool covers the source IP", func() {
+			v, c, vmRef := setup("10.100.0.5", true,
+				makeCalicoNAD(100), makeNetwork(l2Single),
+				makeIPPool("vlan100-upper", "10.100.0.128/25"), // covers VLAN but not 10.100.0.5
+			)
+			issues, err := v.CalicoIssues(vmRef, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(issues).To(ConsistOf(planbase.CalicoIssue{
+				Kind: planbase.CalicoIssueIPNotInIPPool, Network: netName, VLAN: 100, IP: "10.100.0.5",
+			}))
+		})
+
+		It("skips per-IP checks when preserveStaticIPs is false", func() {
+			// Source IP would fail subnet check, but preservation is off.
+			v, c, vmRef := setup("192.168.1.5", false,
+				makeCalicoNAD(100), makeNetwork(l2Single),
+				makeIPPool("vlan100-pool", "10.100.0.0/24"),
+			)
+			issues, err := v.CalicoIssues(vmRef, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(issues).To(BeEmpty())
+		})
+
+		It("deduplicates identical issues across NICs", func() {
+			// Both NICs reference the same NAD, whose Calico Network is missing.
+			// Without dedup we'd get NetworkNotFound twice.
+			v, c, vmRef := setup("10.100.0.5", false, makeCalicoNAD(100))
+			vm := v.Source.Inventory.(*mockInventory).vm
+			vm.NICs = append(vm.NICs, vsphere.NIC{Network: vsphere.Ref{ID: srcNetID}, DeviceKey: 4002})
+			vm.GuestNetworks = append(vm.GuestNetworks, vsphere.GuestNetwork{IP: "10.100.0.6", DeviceConfigId: 4002})
+			v.Source.Inventory.(*mockInventory).vm = vm
+
+			issues, err := v.CalicoIssues(vmRef, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(issues).To(ConsistOf(planbase.CalicoIssue{
+				Kind: planbase.CalicoIssueNetworkNotFound, Network: netName, VLAN: 100,
+			}))
 		})
 	})
 })

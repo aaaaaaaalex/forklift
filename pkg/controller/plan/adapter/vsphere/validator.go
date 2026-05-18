@@ -19,10 +19,11 @@ import (
 	"github.com/kubev2v/forklift/pkg/controller/provider/web/base"
 	model "github.com/kubev2v/forklift/pkg/controller/provider/web/vsphere"
 	"github.com/kubev2v/forklift/pkg/controller/validation"
+	calicoclient "github.com/kubev2v/forklift/pkg/lib/client/calico"
 	liberr "github.com/kubev2v/forklift/pkg/lib/error"
 	"github.com/vmware/govmomi/vim25/types"
 	core "k8s.io/api/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	k8serr "k8s.io/apimachinery/pkg/api/errors"
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -308,7 +309,7 @@ func (r *Validator) shouldMigrateSharedDisks(vm *model.VM) bool {
 	return r.Plan.Spec.MigrateSharedDisks
 }
 
-func (r *Validator) SharedDisks(vmRef ref.Ref, client client.Client) (ok bool, msg string, category string, err error) {
+func (r *Validator) SharedDisks(vmRef ref.Ref, client k8sclient.Client) (ok bool, msg string, category string, err error) {
 	vm := &model.VM{}
 	err = r.Source.Inventory.Find(vm, vmRef)
 	if err != nil {
@@ -410,7 +411,7 @@ func (r *Validator) SharedDisks(vmRef ref.Ref, client client.Client) (ok bool, m
 	return true, "", "", nil
 }
 
-func (r *Validator) getUdnSubnet(client client.Client) (string, error) {
+func (r *Validator) getUdnSubnet(client k8sclient.Client) (string, error) {
 	key := k8sclient.ObjectKey{
 		Name: r.Plan.Spec.TargetNamespace,
 	}
@@ -472,7 +473,7 @@ func (r *Validator) getSourceNetworkForPodNetworkTarget(vmRef ref.Ref) (net *mod
 	return
 }
 
-func (r *Validator) UdnStaticIPs(vmRef ref.Ref, client client.Client) (ok bool, err error) {
+func (r *Validator) UdnStaticIPs(vmRef ref.Ref, client k8sclient.Client) (ok bool, err error) {
 	// Check static IPs
 	if !r.Plan.DestinationHasUdnNetwork(client) {
 		return true, nil
@@ -656,4 +657,139 @@ func isUnknownToolsStatus(s string) bool {
 	default:
 		return false
 	}
+}
+
+// CalicoIssues walks the VM's NICs and returns Calico Network validation
+// failures. Issues are deduplicated by {Kind, Network, VLAN, IP}, so two NICs
+// hitting the same failure mode yield a single issue.
+//
+// Per-NIC failures short-circuit downstream checks within that NIC.
+// So, fixing an upstream issue may reveal a downstream issue on the next pass.
+func (r *Validator) CalicoIssues(vmRef ref.Ref, c k8sclient.Client) ([]planbase.CalicoIssue, error) {
+	if r.Plan.Referenced.Map.Network == nil {
+		return nil, nil
+	}
+	vm := &model.VM{}
+	if err := r.Source.Inventory.Find(vm, vmRef); err != nil {
+		return nil, liberr.Wrap(err, "vm", vmRef)
+	}
+
+	var issues []planbase.CalicoIssue
+	seen := map[planbase.CalicoIssue]struct{}{}
+	emit := func(i planbase.CalicoIssue) {
+		if _, ok := seen[i]; ok {
+			return
+		}
+		seen[i] = struct{}{}
+		issues = append(issues, i)
+	}
+	netMap := r.Plan.Referenced.Map.Network.Spec.Map
+	var pools []calicoclient.IPPool
+	poolsLoaded := false
+
+	for _, nic := range vm.NICs {
+		// Skip non-Calico items.
+		mapped := findNetworkMapping(r.Source.Inventory, nic, netMap)
+		if mapped == nil || mapped.Destination.Type != planbase.Multus {
+			continue
+		}
+		cfg, err := planbase.FetchAndParseNAD(context.TODO(), c,
+			mapped.Destination.Namespace, mapped.Destination.Name)
+		if err != nil {
+			return nil, liberr.Wrap(err, "vm", vmRef)
+		}
+		if !cfg.ReferencesCalicoNetwork() {
+			continue
+		}
+
+		ctx := planbase.CalicoIssue{Network: cfg.Network, VLAN: cfg.VLAN}
+
+		nw, err := calicoclient.GetNetwork(context.TODO(), c, cfg.Network)
+		if err != nil {
+			if k8serr.IsNotFound(err) {
+				ctx.Kind = planbase.CalicoIssueNetworkNotFound
+				emit(ctx)
+				continue
+			}
+			return nil, liberr.Wrap(err, "vm", vmRef, "network", cfg.Network)
+		}
+		if nw.L2Bridge == nil {
+			ctx.Kind = planbase.CalicoIssueNetworkHasNoL2Bridge
+			emit(ctx)
+			continue
+		}
+
+		entry, vlanIssueKind := resolveVLANEntry(nw.L2Bridge.VLANs, cfg.VLAN)
+		if vlanIssueKind != "" {
+			ctx.Kind = vlanIssueKind
+			emit(ctx)
+			continue
+		}
+
+		if !poolsLoaded {
+			pools, err = calicoclient.ListIPPools(context.TODO(), c)
+			if err != nil {
+				return nil, liberr.Wrap(err, "vm", vmRef)
+			}
+			poolsLoaded = true
+		}
+		if !calicoclient.HasEligiblePool(pools, entry.Subnets) {
+			ctx.Kind = planbase.CalicoIssueVLANHasNoIPPool
+			emit(ctx)
+			continue // per-IP pool checks would be redundant
+		}
+
+		if !r.Plan.Spec.PreserveStaticIPs {
+			continue
+		}
+		for _, ip := range findInterfaceIps(vm, nic) {
+			perIP := ctx
+			perIP.IP = ip
+			if !ipInAnySubnet(ip, entry.Subnets) {
+				perIP.Kind = planbase.CalicoIssueIPNotInSubnet
+				emit(perIP)
+				continue // pool check for this IP would be redundant
+			}
+			if calicoclient.EligiblePoolForIP(pools, ip, entry.Subnets) == nil {
+				perIP.Kind = planbase.CalicoIssueIPNotInIPPool
+				emit(perIP)
+			}
+		}
+	}
+	return issues, nil
+}
+
+// resolveVLANEntry returns the l2Bridge.vlans[] entry matched by nadVLAN.
+// When no entry matches, returns nil entry plus a non-empty CalicoIssueKind
+// describing the failure (VLANAmbiguous or VLANNotInNetwork).
+func resolveVLANEntry(vlans []calicoclient.VLANEntry, nadVLAN uint16) (*calicoclient.VLANEntry, planbase.CalicoIssueKind) {
+	if nadVLAN == 0 {
+		if len(vlans) != 1 {
+			return nil, planbase.CalicoIssueVLANAmbiguous
+		}
+		return &vlans[0], ""
+	}
+	for i := range vlans {
+		if vlans[i].VID == nadVLAN {
+			return &vlans[i], ""
+		}
+	}
+	return nil, planbase.CalicoIssueVLANNotInNetwork
+}
+
+func ipInAnySubnet(ip string, subnets []string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	for _, s := range subnets {
+		_, n, err := net.ParseCIDR(s)
+		if err != nil {
+			continue
+		}
+		if n.Contains(parsed) {
+			return true
+		}
+	}
+	return false
 }

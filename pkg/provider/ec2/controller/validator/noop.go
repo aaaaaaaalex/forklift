@@ -81,3 +81,8 @@ func (r *Validator) VMMigrationType(vmRef ref.Ref) (bool, error) {
 func (r *Validator) WarmMigration() bool {
 	return false
 }
+
+// CalicoIssues returns no issues (not applicable for EC2).
+func (r *Validator) CalicoIssues(_ ref.Ref, _ client.Client) ([]base.CalicoIssue, error) {
+	return nil, nil
+}

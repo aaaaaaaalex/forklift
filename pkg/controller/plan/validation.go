@@ -67,6 +67,7 @@ const (
 	VMDuplicateNADMappings          = "VMDuplicateNADMappings"
 	VMMissingGuestIPs               = "VMMissingGuestIPs"
 	VMIpNotMatchingUdnSubnet        = "VMIpNotMatchingUdnSubnet"
+	CalicoNetworkInvalid            = "CalicoNetworkInvalid"
 	VMMissingChangedBlockTracking   = "VMMissingChangedBlockTracking"
 	VMHasSnapshots                  = "VMHasSnapshots"
 	HostNotReady                    = "HostNotReady"
@@ -819,6 +820,13 @@ func (r *Reconciler) validateVM(plan *api.Plan, ctx *plancontext.Context) error 
 		Message:  "VM IP does not match with the primary UDN subnet",
 		Items:    []string{},
 	}
+	calicoNetworkInvalid := libcnd.Condition{
+		Type:     CalicoNetworkInvalid,
+		Status:   True,
+		Reason:   NotValid,
+		Category: api.CategoryCritical,
+		Items:    []string{},
+	}
 	missingCbtForWarm := libcnd.Condition{
 		Type:     VMMissingChangedBlockTracking,
 		Status:   True,
@@ -1247,6 +1255,21 @@ func (r *Reconciler) validateVM(plan *api.Plan, ctx *plancontext.Context) error 
 				vmIpDoesNotMatchUdnSubnet.Items = append(vmIpDoesNotMatchUdnSubnet.Items, ref.String())
 			}
 		}
+		calicoIssues, err := validator.CalicoIssues(*ref, ctx.Destination.Client)
+		if err != nil {
+			return err
+		}
+		if len(calicoIssues) > 0 {
+			calicoNetworkInvalid.Items = append(calicoNetworkInvalid.Items, ref.String())
+			details := make([]string, 0, len(calicoIssues))
+			for _, issue := range calicoIssues {
+				details = append(details, calicoIssueDetail(issue))
+			}
+			if calicoNetworkInvalid.Message != "" {
+				calicoNetworkInvalid.Message += "; "
+			}
+			calicoNetworkInvalid.Message += fmt.Sprintf("VM %s has Calico Network issues: %s", ref.String(), strings.Join(details, "; "))
+		}
 		// Destination.
 		provider = plan.Referenced.Provider.Destination
 		if provider == nil {
@@ -1373,6 +1396,9 @@ func (r *Reconciler) validateVM(plan *api.Plan, ctx *plancontext.Context) error 
 	}
 	if len(vmIpDoesNotMatchUdnSubnet.Items) > 0 {
 		plan.Status.SetCondition(vmIpDoesNotMatchUdnSubnet)
+	}
+	if len(calicoNetworkInvalid.Items) > 0 {
+		plan.Status.SetCondition(calicoNetworkInvalid)
 	}
 	if len(vmHasSnapshotsForWarm.Items) > 0 {
 		plan.Status.SetCondition(vmHasSnapshotsForWarm)
@@ -1797,6 +1823,28 @@ func (r *Reconciler) validateVddkImage(plan *api.Plan) (err error) {
 	}
 
 	return
+}
+
+// calicoIssueDetail formats a per-issue detail phrase naming the offending
+// Network / VLAN / IP for the CalicoNetworkInvalid Plan condition's Message.
+func calicoIssueDetail(i planbase.CalicoIssue) string {
+	switch i.Kind {
+	case planbase.CalicoIssueNetworkNotFound:
+		return fmt.Sprintf("Calico Network %q does not exist", i.Network)
+	case planbase.CalicoIssueNetworkHasNoL2Bridge:
+		return fmt.Sprintf("Calico Network %q has no l2Bridge spec", i.Network)
+	case planbase.CalicoIssueVLANNotInNetwork:
+		return fmt.Sprintf("NAD requests VLAN %d, not present in Calico Network %q", i.VLAN, i.Network)
+	case planbase.CalicoIssueVLANAmbiguous:
+		return fmt.Sprintf("NAD omits the vlan field but Calico Network %q has multiple VLAN entries", i.Network)
+	case planbase.CalicoIssueVLANHasNoIPPool:
+		return fmt.Sprintf("Calico Network %q VLAN %d has no covering IPPool", i.Network, i.VLAN)
+	case planbase.CalicoIssueIPNotInSubnet:
+		return fmt.Sprintf("IP %s is outside Calico Network %q VLAN %d subnets", i.IP, i.Network, i.VLAN)
+	case planbase.CalicoIssueIPNotInIPPool:
+		return fmt.Sprintf("IP %s has no covering IPPool in Calico Network %q VLAN %d", i.IP, i.Network, i.VLAN)
+	}
+	return ""
 }
 
 func missingStaticIPsMessage(plan *api.Plan) string {

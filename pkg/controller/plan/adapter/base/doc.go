@@ -263,6 +263,40 @@ type Validator interface {
 	PVCNameTemplate(vmRef ref.Ref, pvcNameTemplate string) (bool, error)
 	// Validate guest tools installation and status (e.g., VMware Tools, VirtIO drivers).
 	GuestToolsInstalled(vmRef ref.Ref) (ok bool, err error)
+	// CalicoIssues represents all Calico-related issues found for a VM.
+	CalicoIssues(vmRef ref.Ref, client client.Client) ([]CalicoIssue, error)
+}
+
+// CalicoIssueKind enumerates the Calico Network failure modes.
+type CalicoIssueKind string
+
+const (
+	// CalicoIssueNetworkNotFound no Network CR existed.
+	CalicoIssueNetworkNotFound CalicoIssueKind = "NetworkNotFound"
+	// CalicoIssueNetworkHasNoL2Bridge Network CR existed but had no L2Bridge field spec'd.
+	CalicoIssueNetworkHasNoL2Bridge CalicoIssueKind = "NetworkHasNoL2Bridge"
+	// CalicoIssueVLANNotInNetwork NIC's CNI entry's VLAN was not present in the referenced Network CR.
+	CalicoIssueVLANNotInNetwork CalicoIssueKind = "VLANNotInNetwork"
+	// CalicoIssueVLANAmbiguous NIC's CNI entry had no VLAN, and Network CR had more than one VLAN specified.
+	CalicoIssueVLANAmbiguous CalicoIssueKind = "VLANAmbiguous"
+	// CalicoIssueVLANHasNoIPPool no IPPool existed satisfying the VLAN subnet's requirements.
+	CalicoIssueVLANHasNoIPPool CalicoIssueKind = "VLANHasNoIPPool"
+	// CalicoIssueIPNotInSubnet NIC's IP was not in any Network.spec.l2Bridge.vlans[].subnets[].cidr.
+	CalicoIssueIPNotInSubnet CalicoIssueKind = "IPNotInSubnet"
+	// CalicoIssueIPNotInIPPool NIC's IP was not in any Calico IPPool.
+	CalicoIssueIPNotInIPPool CalicoIssueKind = "IPNotInIPPool"
+)
+
+// CalicoIssue represents one Calico Network validation failure observed on a
+// VM.
+type CalicoIssue struct {
+	Kind CalicoIssueKind
+	// Network is the Calico Network CR name reference.
+	Network string
+	// VLAN is the NAD's vlan field; 0 when unspecified.
+	VLAN uint16
+	// IP is the source VM IP.
+	IP string
 }
 
 // DestinationClient API.

@@ -240,3 +240,9 @@ func (r *Validator) PVCNameTemplate(vmRef ref.Ref, pvcNameTemplate string) (bool
 func (r *Validator) GuestToolsInstalled(_ ref.Ref) (bool, error) {
 	return true, nil
 }
+
+// CalicoIssues returns no issues. Non-vSphere providers aren't a target
+// for Calico-Network IP/MAC preservation today.
+func (r *Validator) CalicoIssues(_ ref.Ref, _ client.Client) ([]planbase.CalicoIssue, error) {
+	return nil, nil
+}
