@@ -31,7 +31,7 @@ func FetchAndParseNAD(ctx context.Context, c client.Client, namespace, name stri
 		return cfg, nil
 	}
 	if err := json.Unmarshal([]byte(nad.Spec.Config), cfg); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("nad %s/%s: parse Spec.Config: %w", namespace, name, err)
 	}
 	return cfg, nil
 }

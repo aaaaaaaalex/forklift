@@ -783,6 +783,22 @@ var _ = Describe("vsphere validation tests", func() {
 			}))
 		})
 
+		It("resolves implicit VLAN (NAD omits vlan, Network has one entry) to the Network's VID for downstream issues", func() {
+			// NAD has vlan=0 (omitted); Network has exactly one entry with id=100
+			// and subnet 10.100.0.0/24. Source IP is outside the subnet, so
+			// IPNotInSubnet fires. The emitted issue must carry the resolved
+			// VID (100), not the raw NAD value (0).
+			v, c, vmRef := setup("192.168.1.5", true,
+				makeCalicoNAD(0), makeNetwork(l2Single),
+				makeIPPool("vlan100-pool", "10.100.0.0/24"),
+			)
+			issues, err := v.CalicoIssues(vmRef, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(issues).To(ConsistOf(planbase.CalicoIssue{
+				Kind: planbase.CalicoIssueIPNotInSubnet, Network: netName, VLAN: 100, IP: "192.168.1.5",
+			}))
+		})
+
 		It("emits IPNotInIPPool with the offending IP when preserveStaticIPs is on and no eligible pool covers the source IP", func() {
 			v, c, vmRef := setup("10.100.0.5", true,
 				makeCalicoNAD(100), makeNetwork(l2Single),

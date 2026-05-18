@@ -702,29 +702,35 @@ func (r *Validator) CalicoIssues(vmRef ref.Ref, c k8sclient.Client) ([]planbase.
 			continue
 		}
 
-		ctx := planbase.CalicoIssue{Network: cfg.Network, VLAN: cfg.VLAN}
+		issueBase := planbase.CalicoIssue{Network: cfg.Network, VLAN: cfg.VLAN}
 
 		nw, err := calicoclient.GetNetwork(context.TODO(), c, cfg.Network)
 		if err != nil {
 			if k8serr.IsNotFound(err) {
-				ctx.Kind = planbase.CalicoIssueNetworkNotFound
-				emit(ctx)
+				issueBase.Kind = planbase.CalicoIssueNetworkNotFound
+				emit(issueBase)
 				continue
 			}
 			return nil, liberr.Wrap(err, "vm", vmRef, "network", cfg.Network)
 		}
 		if nw.L2Bridge == nil {
-			ctx.Kind = planbase.CalicoIssueNetworkHasNoL2Bridge
-			emit(ctx)
+			issueBase.Kind = planbase.CalicoIssueNetworkHasNoL2Bridge
+			emit(issueBase)
 			continue
 		}
 
 		entry, vlanIssueKind := resolveVLANEntry(nw.L2Bridge.VLANs, cfg.VLAN)
 		if vlanIssueKind != "" {
-			ctx.Kind = vlanIssueKind
-			emit(ctx)
+			issueBase.Kind = vlanIssueKind
+			emit(issueBase)
 			continue
 		}
+		// VLANAmbiguous/VLANNotInNetwork above intentionally carry the raw
+		// NAD VLAN (0 is meaningful for "ambiguous"). Past this point the
+		// NAD's VLAN has been resolved to a concrete Network entry, so
+		// downstream issues report that VID instead of a possibly-zero
+		// NAD value.
+		issueBase.VLAN = entry.VID
 
 		if !poolsLoaded {
 			pools, err = calicoclient.ListIPPools(context.TODO(), c)
@@ -734,8 +740,8 @@ func (r *Validator) CalicoIssues(vmRef ref.Ref, c k8sclient.Client) ([]planbase.
 			poolsLoaded = true
 		}
 		if !calicoclient.HasEligiblePool(pools, entry.Subnets) {
-			ctx.Kind = planbase.CalicoIssueVLANHasNoIPPool
-			emit(ctx)
+			issueBase.Kind = planbase.CalicoIssueVLANHasNoIPPool
+			emit(issueBase)
 			continue // per-IP pool checks would be redundant
 		}
 
@@ -743,7 +749,7 @@ func (r *Validator) CalicoIssues(vmRef ref.Ref, c k8sclient.Client) ([]planbase.
 			continue
 		}
 		for _, ip := range findInterfaceIps(vm, nic) {
-			perIP := ctx
+			perIP := issueBase
 			perIP.IP = ip
 			if !ipInAnySubnet(ip, entry.Subnets) {
 				perIP.Kind = planbase.CalicoIssueIPNotInSubnet
