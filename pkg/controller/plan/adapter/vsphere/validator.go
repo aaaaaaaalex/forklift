@@ -767,10 +767,15 @@ func (r *Validator) CalicoIssues(vmRef ref.Ref, c k8sclient.Client) ([]planbase.
 
 // resolveVLANEntry returns the l2Bridge.vlans[] entry matched by nadVLAN.
 // When no entry matches, returns nil entry plus a non-empty CalicoIssueKind
-// describing the failure (VLANAmbiguous or VLANNotInNetwork).
+// describing the failure: NetworkHasNoVLANs (vlans list is empty),
+// VLANAmbiguous (NAD omits vlan and Network has multiple entries), or
+// VLANNotInNetwork (NAD's vlan is absent from the Network's entries).
 func resolveVLANEntry(vlans []calicoclient.VLANEntry, nadVLAN uint16) (*calicoclient.VLANEntry, planbase.CalicoIssueKind) {
+	if len(vlans) == 0 {
+		return nil, planbase.CalicoIssueNetworkHasNoVLANs
+	}
 	if nadVLAN == 0 {
-		if len(vlans) != 1 {
+		if len(vlans) > 1 {
 			return nil, planbase.CalicoIssueVLANAmbiguous
 		}
 		return &vlans[0], ""

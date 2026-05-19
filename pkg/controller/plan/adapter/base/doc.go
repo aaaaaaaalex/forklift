@@ -275,6 +275,8 @@ const (
 	CalicoIssueNetworkNotFound CalicoIssueKind = "NetworkNotFound"
 	// CalicoIssueNetworkHasNoL2Bridge Network CR existed but had no L2Bridge field spec'd.
 	CalicoIssueNetworkHasNoL2Bridge CalicoIssueKind = "NetworkHasNoL2Bridge"
+	// CalicoIssueNetworkHasNoVLANs Network CR's L2Bridge had an empty vlans list (no VLAN to select).
+	CalicoIssueNetworkHasNoVLANs CalicoIssueKind = "NetworkHasNoVLANs"
 	// CalicoIssueVLANNotInNetwork NIC's NAD entry's VLAN was not present in the referenced Network CR.
 	CalicoIssueVLANNotInNetwork CalicoIssueKind = "VLANNotInNetwork"
 	// CalicoIssueVLANAmbiguous NIC's NAD entry had no VLAN, and Network CR had more than one VLAN to choose from.
@@ -294,9 +296,10 @@ type CalicoIssue struct {
 	// Network is the Calico Network CR name reference.
 	Network string
 	// VLAN identifies the Calico Network VLAN for the NIC.
-	// - For NetworkNotFound, NetworkHasNoL2Bridge, VLANAmbiguous, and
-	//   VLANNotInNetwork: this is the raw NAD vlan value (0 when the NAD
-	//   omits the field — notably the case for VLANAmbiguous).
+	// - For NetworkNotFound, NetworkHasNoL2Bridge, NetworkHasNoVLANs,
+	//   VLANAmbiguous, and VLANNotInNetwork: this is the raw NAD vlan
+	//   value (0 when the NAD omits the field — notably the case for
+	//   VLANAmbiguous).
 	// - For VLANHasNoIPPool, IPNotInSubnet, and IPNotInIPPool: this is the
 	//   resolved l2Bridge.vlans[].vlan.id (always non-zero).
 	VLAN uint16

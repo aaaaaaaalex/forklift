@@ -743,6 +743,39 @@ var _ = Describe("vsphere validation tests", func() {
 			Expect(kinds(issues)).To(ConsistOf(planbase.CalicoIssueNetworkHasNoL2Bridge))
 		})
 
+		It("emits NetworkHasNoVLANs when the Network's l2Bridge.vlans list is empty", func() {
+			// L2Bridge is spec'd but vlans is empty — distinct from
+			// NetworkHasNoL2Bridge (no l2Bridge at all). Should not be
+			// reported as VLANAmbiguous even though the NAD omits vlan.
+			emptyVLANs := map[string]interface{}{
+				"l2Bridge": map[string]interface{}{
+					"vlans": []interface{}{},
+				},
+			}
+			v, c, vmRef := setup("10.100.0.5", true,
+				makeCalicoNAD(0), makeNetwork(emptyVLANs),
+			)
+			issues, err := v.CalicoIssues(vmRef, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(kinds(issues)).To(ConsistOf(planbase.CalicoIssueNetworkHasNoVLANs))
+		})
+
+		It("emits NetworkHasNoVLANs even when the NAD specifies a vlan ID", func() {
+			// Same root cause: Network has no VLAN entries. The NAD's vlan
+			// value is moot — there's nothing to match against.
+			emptyVLANs := map[string]interface{}{
+				"l2Bridge": map[string]interface{}{
+					"vlans": []interface{}{},
+				},
+			}
+			v, c, vmRef := setup("10.100.0.5", true,
+				makeCalicoNAD(100), makeNetwork(emptyVLANs),
+			)
+			issues, err := v.CalicoIssues(vmRef, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(kinds(issues)).To(ConsistOf(planbase.CalicoIssueNetworkHasNoVLANs))
+		})
+
 		It("emits VLANNotInNetwork when the NAD vlan ID doesn't match any entry", func() {
 			v, c, vmRef := setup("10.100.0.5", true,
 				makeCalicoNAD(999), makeNetwork(l2Single),

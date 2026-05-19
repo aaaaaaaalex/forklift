@@ -1833,6 +1833,8 @@ func calicoIssueDetail(i planbase.CalicoIssue) string {
 		return fmt.Sprintf("Calico Network %q does not exist", i.Network)
 	case planbase.CalicoIssueNetworkHasNoL2Bridge:
 		return fmt.Sprintf("Calico Network %q has no l2Bridge spec", i.Network)
+	case planbase.CalicoIssueNetworkHasNoVLANs:
+		return fmt.Sprintf("Calico Network %q has no VLAN entries in l2Bridge.vlans", i.Network)
 	case planbase.CalicoIssueVLANNotInNetwork:
 		return fmt.Sprintf("NAD requests VLAN %d, not present in Calico Network %q", i.VLAN, i.Network)
 	case planbase.CalicoIssueVLANAmbiguous:
