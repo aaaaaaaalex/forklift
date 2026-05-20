@@ -1,6 +1,8 @@
 package ocp
 
 import (
+	"encoding/json"
+	"fmt"
 	"path"
 	"strconv"
 
@@ -237,4 +239,17 @@ func (m *NetworkConfig) IsUnsupportedUdn() bool {
 // names a projectcalico.org/v3 Network resource.
 func (m *NetworkConfig) ReferencesCalicoNetwork() bool {
 	return m.Type == CalicoCNIType && m.Network != ""
+}
+
+// ParseNAD unmarshals nad.Spec.Config into a NetworkConfig.
+// An empty Spec.Config yields a zero-valued NetworkConfig and no error.
+func ParseNAD(nad *net.NetworkAttachmentDefinition) (*NetworkConfig, error) {
+	cfg := &NetworkConfig{}
+	if nad.Spec.Config == "" {
+		return cfg, nil
+	}
+	if err := json.Unmarshal([]byte(nad.Spec.Config), cfg); err != nil {
+		return nil, fmt.Errorf("nad %s/%s: parse Spec.Config: %w", nad.Namespace, nad.Name, err)
+	}
+	return cfg, nil
 }

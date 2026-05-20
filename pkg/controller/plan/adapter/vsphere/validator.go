@@ -2,7 +2,6 @@ package vsphere
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
@@ -436,8 +435,7 @@ func (r *Validator) getUdnSubnet(client k8sclient.Client) (string, error) {
 		return "", err
 	}
 	for _, nad := range nadList.Items {
-		var networkConfig ocpmodel.NetworkConfig
-		err = json.Unmarshal([]byte(nad.Spec.Config), &networkConfig)
+		networkConfig, err := ocpmodel.ParseNAD(&nad)
 		if err != nil {
 			r.Log.Info("Skipping NAD: failed to parse network config", "namespace", nad.Namespace, "name", nad.Name, "error", err.Error())
 			continue
