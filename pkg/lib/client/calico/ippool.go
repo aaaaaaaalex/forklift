@@ -55,6 +55,19 @@ func HasEligiblePool(pools []IPPool, vlanSubnets []string) bool {
 	return false
 }
 
+// EligiblePools returns the subset of pools whose CIDR is contained within
+// at least one vlanSubnet. Callers cache the result so per-IP membership
+// checks don't repeat the containment filter.
+func EligiblePools(pools []IPPool, vlanSubnets []string) []IPPool {
+	out := make([]IPPool, 0, len(pools))
+	for i := range pools {
+		if poolContainedInAnyVLANSubnet(pools[i].CIDR, vlanSubnets) {
+			out = append(out, pools[i])
+		}
+	}
+	return out
+}
+
 // EligiblePoolForIP returns the first pool that (a) contains the given IP and
 // (b) is itself contained within at least one VLAN subnet. Returns nil when
 // no pool qualifies.

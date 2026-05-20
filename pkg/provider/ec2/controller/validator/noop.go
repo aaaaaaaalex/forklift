@@ -82,7 +82,12 @@ func (r *Validator) WarmMigration() bool {
 	return false
 }
 
-// CalicoIssues returns no issues (not applicable for EC2).
-func (r *Validator) CalicoIssues(_ ref.Ref, _ client.Client) ([]base.CalicoIssue, error) {
+// ValidateCalicoNADs returns empty results (not applicable for EC2).
+func (r *Validator) ValidateCalicoNADs(_ client.Client) (base.CalicoValidationResult, error) {
+	return base.CalicoValidationResult{}, nil
+}
+
+// CalicoVMIssues returns no issues (not applicable for EC2).
+func (r *Validator) CalicoVMIssues(_ ref.Ref, _ *base.CalicoValidationCache) ([]base.CalicoIssue, error) {
 	return nil, nil
 }

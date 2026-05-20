@@ -263,8 +263,15 @@ type Validator interface {
 	PVCNameTemplate(vmRef ref.Ref, pvcNameTemplate string) (bool, error)
 	// Validate guest tools installation and status (e.g., VMware Tools, VirtIO drivers).
 	GuestToolsInstalled(vmRef ref.Ref) (ok bool, err error)
-	// CalicoIssues represents all Calico-related issues found for a VM.
-	CalicoIssues(vmRef ref.Ref, client client.Client) ([]CalicoIssue, error)
+	// ValidateCalicoNADs validates every Calico-referencing NAD in the
+	// plan's network map. Issues are NAD-scoped (network/IPPool config);
+	// the returned cache is consumed by CalicoVMIssues.
+	ValidateCalicoNADs(client client.Client) (CalicoValidationResult, error)
+	// CalicoVMIssues returns per-VM Calico issues (IP membership in subnet
+	// / IPPool). Reads only from the cache produced by ValidateCalicoNADs;
+	// VMs whose mapped NAD failed plan-level validation are skipped here
+	// — their failure is already reported via CalicoNetworkInvalid.
+	CalicoVMIssues(vmRef ref.Ref, cache *CalicoValidationCache) ([]CalicoIssue, error)
 }
 
 // CalicoIssueKind enumerates the Calico Network failure modes.
@@ -289,19 +296,15 @@ const (
 	CalicoIssueIPNotInIPPool CalicoIssueKind = "IPNotInIPPool"
 )
 
-// CalicoIssue represents one Calico Network validation failure observed on a
-// VM.
+// CalicoIssue represents a per-VM Calico Network validation failure: the
+// VM's NIC IP does not fit the destination's Calico Network VLAN subnet or
+// IPPool. NAD-level issues (NetworkNotFound, NetworkHasNoL2Bridge, etc.)
+// are surfaced via CalicoNADIssue, not this type.
 type CalicoIssue struct {
 	Kind CalicoIssueKind
 	// Network is the Calico Network CR name reference.
 	Network string
-	// VLAN identifies the Calico Network VLAN for the NIC.
-	// - For NetworkNotFound, NetworkHasNoL2Bridge, NetworkHasNoVLANs,
-	//   VLANAmbiguous, and VLANNotInNetwork: this is the raw NAD vlan
-	//   value (0 when the NAD omits the field — notably the case for
-	//   VLANAmbiguous).
-	// - For VLANHasNoIPPool, IPNotInSubnet, and IPNotInIPPool: this is the
-	//   resolved l2Bridge.vlans[].vlan.id (always non-zero).
+	// VLAN is the resolved l2Bridge.vlans[].vlan.id (always non-zero).
 	VLAN uint16
 	// IP is the source VM IP.
 	IP string
