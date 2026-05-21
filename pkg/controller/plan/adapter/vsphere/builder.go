@@ -26,6 +26,7 @@ import (
 	planbase "github.com/kubev2v/forklift/pkg/controller/plan/adapter/base"
 	plancontext "github.com/kubev2v/forklift/pkg/controller/plan/context"
 	utils "github.com/kubev2v/forklift/pkg/controller/plan/util"
+	ocpmodel "github.com/kubev2v/forklift/pkg/controller/provider/model/ocp"
 	"github.com/kubev2v/forklift/pkg/controller/provider/model/vsphere"
 	"github.com/kubev2v/forklift/pkg/controller/provider/web"
 	model "github.com/kubev2v/forklift/pkg/controller/provider/web/vsphere"
@@ -44,6 +45,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	cnv "kubevirt.io/api/core/v1"
@@ -755,6 +757,9 @@ func (r *Builder) mapNetworks(vm *model.VM, object *cnv.VirtualMachineSpec) (err
 	var calicoMacInterfaces = map[string]string{}
 	var calicoIpInterfaces = map[string][]string{}
 
+	// cache for network configs to avoid duplicate GETs.
+	nadCache := map[k8stypes.NamespacedName]*ocpmodel.NetworkConfig{}
+
 	numNetworks := 0
 	hasUDN := r.Plan.DestinationHasUdnNetwork(r.Destination)
 	netMapIn := r.Context.Map.Network.Spec.Map
@@ -811,10 +816,18 @@ func (r *Builder) mapNetworks(vm *model.VM, object *cnv.VirtualMachineSpec) (err
 			}
 			kInterface.Bridge = &cnv.InterfaceBridge{}
 
-			cfg, nadErr := planbase.FetchAndParseNAD(context.TODO(), r.Destination.Client,
-				mapped.Destination.Namespace, mapped.Destination.Name)
-			if nadErr != nil {
-				return nadErr
+			nadKey := k8stypes.NamespacedName{
+				Namespace: mapped.Destination.Namespace,
+				Name:      mapped.Destination.Name,
+			}
+			cfg, cached := nadCache[nadKey]
+			if !cached {
+				cfg, err = planbase.FetchAndParseNAD(context.TODO(), r.Destination.Client,
+					nadKey.Namespace, nadKey.Name)
+				if err != nil {
+					return err
+				}
+				nadCache[nadKey] = cfg
 			}
 			if cfg != nil && cfg.ReferencesCalicoNetwork() {
 				calicoMacInterfaces[networkName] = nic.MAC

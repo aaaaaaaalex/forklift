@@ -833,9 +833,153 @@ var _ = Describe("vsphere validation tests", func() {
 				Expect(entry).NotTo(BeNil())
 				Expect(entry.VLAN.VID).To(Equal(uint16(100)))
 			})
+
+			It("dedupes the same NAD when referenced by multiple network-map pairs", func() {
+				// Same NAD destination referenced by two source networks. Without
+				// dedup, ValidateCalicoNADs would emit NetworkNotFound twice and
+				// double-fetch the NAD.
+				v, c, _ := setup("10.100.0.5", true, makeCalicoNAD(100))
+				v.Plan.Referenced.Map.Network.Spec.Map = append(
+					v.Plan.Referenced.Map.Network.Spec.Map,
+					v1beta1.NetworkPair{
+						Source: ref.Ref{ID: "src-2"},
+						Destination: v1beta1.DestinationNetwork{
+							Type: planbase.Multus, Namespace: nadNS, Name: nadName,
+						},
+					},
+				)
+				result, err := v.ValidateCalicoNADs(c)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Issues).To(HaveLen(1))
+				Expect(result.Issues[0].Kind).To(Equal(planbase.CalicoIssueNetworkNotFound))
+			})
+
+			It("emits NADUnreadable when the network map references a missing NAD", func() {
+				// Network map destination points at a NAD that doesn't exist on
+				// the destination cluster. ValidateCalicoNADs must not propagate
+				// the NotFound — it should soft-fail and surface a NADUnreadable
+				// issue so the plan validation pass can complete.
+				v, c, _ := setup("10.100.0.5", true) // no NAD in the client
+				result, err := v.ValidateCalicoNADs(c)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Issues).To(ConsistOf(planbase.CalicoNADIssue{
+					NAD:  k8stypes.NamespacedName{Namespace: nadNS, Name: nadName},
+					Kind: planbase.CalicoIssueNADUnreadable,
+				}))
+				Expect(result.Cache.NADs).To(BeEmpty())
+			})
+
+			It("emits NADUnreadable when the NAD spec.config is malformed JSON", func() {
+				badNAD := &k8snet.NetworkAttachmentDefinition{
+					ObjectMeta: metav1.ObjectMeta{Name: nadName, Namespace: nadNS},
+					Spec:       k8snet.NetworkAttachmentDefinitionSpec{Config: `{not-valid-json`},
+				}
+				v, c, _ := setup("10.100.0.5", true, badNAD)
+				result, err := v.ValidateCalicoNADs(c)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Issues).To(ConsistOf(planbase.CalicoNADIssue{
+					NAD:  k8stypes.NamespacedName{Namespace: nadNS, Name: nadName},
+					Kind: planbase.CalicoIssueNADUnreadable,
+				}))
+				Expect(result.Cache.NADs).To(BeEmpty())
+			})
+
+			It("skips Multus NADs that aren't Calico-typed", func() {
+				// An OVN-K8s overlay NAD shouldn't surface a CalicoNADIssue or
+				// occupy a cache slot — it's outside the scope of this validator.
+				ovnNAD := &k8snet.NetworkAttachmentDefinition{
+					ObjectMeta: metav1.ObjectMeta{Name: "ovn-nad", Namespace: nadNS},
+					Spec: k8snet.NetworkAttachmentDefinitionSpec{
+						Config: `{"type":"ovn-k8s-cni-overlay","name":"my-net"}`,
+					},
+				}
+				v, c, _ := setup("10.100.0.5", true, ovnNAD)
+				v.Plan.Referenced.Map.Network.Spec.Map[0].Destination.Name = "ovn-nad"
+				result, err := v.ValidateCalicoNADs(c)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Issues).To(BeEmpty())
+				Expect(result.Cache.NADs).To(BeEmpty())
+			})
+		})
+
+		Describe("plan-level / per-VM cross-cut", func() {
+			It("surviving healthy NAD is still checked per-VM when another NAD in the map is broken", func() {
+				// Two NADs in the map: the original (broken — no Network CR) and
+				// a second healthy one. The VM has a NIC mapped to the healthy
+				// NAD with an out-of-subnet IP. CalicoVMIssues must skip the
+				// broken-NAD NIC silently and still emit IPNotInSubnet for the
+				// surviving NIC.
+				const (
+					healthyNADName = "calico-nad-2"
+					healthyNetName = "vlan200"
+					healthySrcID   = "src-2"
+				)
+				healthyNAD := &k8snet.NetworkAttachmentDefinition{
+					ObjectMeta: metav1.ObjectMeta{Name: healthyNADName, Namespace: nadNS},
+					Spec: k8snet.NetworkAttachmentDefinitionSpec{
+						Config: fmt.Sprintf(`{"type":"calico","network":"%s","vlan":200}`, healthyNetName),
+					},
+				}
+				healthyNet := &unstructured.Unstructured{}
+				healthyNet.SetGroupVersionKind(calicoclient.NetworkGVK)
+				healthyNet.SetName(healthyNetName)
+				_ = unstructured.SetNestedField(healthyNet.Object, map[string]interface{}{
+					"l2Bridge": map[string]interface{}{
+						"vlans": []interface{}{
+							map[string]interface{}{
+								"vlan":    map[string]interface{}{"id": int64(200)},
+								"subnets": []interface{}{map[string]interface{}{"cidr": "10.200.0.0/24"}},
+							},
+						},
+					},
+				}, "spec")
+
+				// NIC 4001 (src-1) maps to the broken NAD; NIC 4002 (src-2) maps
+				// to the healthy NAD and carries an out-of-subnet IP.
+				v, c, vmRef := setup("10.100.0.5", true,
+					makeCalicoNAD(100), // broken — no Network CR
+					healthyNAD, healthyNet,
+					makeIPPool("vlan200-pool", "10.200.0.0/24"),
+				)
+				v.Plan.Referenced.Map.Network.Spec.Map = append(
+					v.Plan.Referenced.Map.Network.Spec.Map,
+					v1beta1.NetworkPair{
+						Source: ref.Ref{ID: healthySrcID},
+						Destination: v1beta1.DestinationNetwork{
+							Type: planbase.Multus, Namespace: nadNS, Name: healthyNADName,
+						},
+					},
+				)
+				inv := v.Source.Inventory.(*mockInventory)
+				inv.networks[healthySrcID] = model.Network{
+					Resource: model.Resource{ID: healthySrcID}, Variant: vsphere.NetDvPortGroup, Key: healthySrcID,
+				}
+				inv.vm.NICs = append(inv.vm.NICs, vsphere.NIC{Network: vsphere.Ref{ID: healthySrcID}, DeviceKey: 4002})
+				inv.vm.GuestNetworks = append(inv.vm.GuestNetworks, vsphere.GuestNetwork{IP: "192.168.1.5", DeviceConfigId: 4002})
+
+				result, err := v.ValidateCalicoNADs(c)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Issues).To(HaveLen(1))
+				Expect(result.Issues[0].NAD).To(Equal(k8stypes.NamespacedName{Namespace: nadNS, Name: nadName}))
+				Expect(result.Cache.NADs).To(HaveLen(1))
+				Expect(result.Cache.NADs).To(HaveKey(k8stypes.NamespacedName{Namespace: nadNS, Name: healthyNADName}))
+
+				issues, err := v.CalicoVMIssues(vmRef, result.Cache)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(issues).To(ConsistOf(planbase.CalicoIssue{
+					Kind: planbase.CalicoIssueIPNotInSubnet, Network: healthyNetName, VLAN: 200, IP: "192.168.1.5",
+				}))
+			})
 		})
 
 		Describe("CalicoVMIssues (per-VM)", func() {
+			It("returns no issues when the cache is nil", func() {
+				v, _, vmRef := setup("10.100.0.5", true)
+				issues, err := v.CalicoVMIssues(vmRef, nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(issues).To(BeEmpty())
+			})
+
 			It("emits IPNotInSubnet when preserveStaticIPs is on and source IP is outside the VLAN subnet", func() {
 				v, c, vmRef := setup("192.168.1.5", true,
 					makeCalicoNAD(100), makeNetwork(l2Single),

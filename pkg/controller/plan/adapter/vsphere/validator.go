@@ -23,6 +23,7 @@ import (
 	"github.com/vmware/govmomi/vim25/types"
 	core "k8s.io/api/core/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -696,7 +697,15 @@ func (r *Validator) ValidateCalicoNADs(c k8sclient.Client) (planbase.CalicoValid
 
 		cfg, err := planbase.FetchAndParseNAD(context.TODO(), c, key.Namespace, key.Name)
 		if err != nil {
-			return planbase.CalicoValidationResult{}, liberr.Wrap(err, "nad", key.String())
+			if r.Log != nil {
+				r.Log.Error(err, "Calico NAD: failed to fetch/parse",
+					"namespace", key.Namespace, "name", key.Name)
+			}
+			result.Issues = append(result.Issues, planbase.CalicoNADIssue{
+				NAD:  key,
+				Kind: planbase.CalicoIssueNADUnreadable,
+			})
+			continue
 		}
 		if !cfg.ReferencesCalicoNetwork() {
 			continue
@@ -706,7 +715,11 @@ func (r *Validator) ValidateCalicoNADs(c k8sclient.Client) (planbase.CalicoValid
 
 		nw, err := calicoclient.GetNetwork(context.TODO(), c, cfg.Network)
 		if err != nil {
-			if k8serr.IsNotFound(err) {
+			// IsNoMatchError covers clusters with no projectcalico.org/v3
+			// CRD installed — the Network kind itself is unknown to the API
+			// server. From the user's perspective this is indistinguishable
+			// from a missing Network CR.
+			if k8serr.IsNotFound(err) || meta.IsNoMatchError(err) {
 				issueBase.Kind = planbase.CalicoIssueNetworkNotFound
 				result.Issues = append(result.Issues, issueBase)
 				continue
@@ -774,7 +787,7 @@ func (r *Validator) CalicoVMIssues(vmRef ref.Ref, cache *planbase.CalicoValidati
 	}
 	vm := &model.VM{}
 	if err := r.Source.Inventory.Find(vm, vmRef); err != nil {
-		return nil, liberr.Wrap(err, "vm", vmRef)
+		return nil, liberr.Wrap(err, "vm", vmRef.String())
 	}
 
 	var issues []planbase.CalicoIssue

@@ -1900,6 +1900,8 @@ func (r *Reconciler) validateVddkImage(plan *api.Plan) (err error) {
 // "default/foo (NetworkNotFound network=\"calico-vlan\")".
 func calicoNADIssueDetail(i planbase.CalicoNADIssue) string {
 	switch i.Kind {
+	case planbase.CalicoIssueNADUnreadable:
+		return fmt.Sprintf("%s (NADUnreadable)", i.NAD.String())
 	case planbase.CalicoIssueNetworkNotFound:
 		return fmt.Sprintf("%s (NetworkNotFound network=%q)", i.NAD.String(), i.Network)
 	case planbase.CalicoIssueNetworkHasNoL2Bridge:

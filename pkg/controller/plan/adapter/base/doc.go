@@ -278,6 +278,10 @@ type Validator interface {
 type CalicoIssueKind string
 
 const (
+	// CalicoIssueNADUnreadable indicates the destination NAD could not be
+	// fetched or parsed (NotFound, malformed JSON, transient API error). The
+	// NAD's Calico configuration is unknowable until this is resolved.
+	CalicoIssueNADUnreadable CalicoIssueKind = "NADUnreadable"
 	// CalicoIssueNetworkNotFound no Network CR existed.
 	CalicoIssueNetworkNotFound CalicoIssueKind = "NetworkNotFound"
 	// CalicoIssueNetworkHasNoL2Bridge Network CR existed but had no L2Bridge field spec'd.
