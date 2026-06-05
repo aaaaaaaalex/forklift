@@ -81,3 +81,13 @@ func (r *Validator) VMMigrationType(vmRef ref.Ref) (bool, error) {
 func (r *Validator) WarmMigration() bool {
 	return false
 }
+
+// ValidateCalicoNADs returns empty results (not applicable for EC2).
+func (r *Validator) ValidateCalicoNADs(_ client.Client) (base.CalicoValidationResult, error) {
+	return base.CalicoValidationResult{}, nil
+}
+
+// CalicoVMIssues returns no issues (not applicable for EC2).
+func (r *Validator) CalicoVMIssues(_ ref.Ref, _ *base.CalicoValidationCache) ([]base.CalicoIssue, error) {
+	return nil, nil
+}
