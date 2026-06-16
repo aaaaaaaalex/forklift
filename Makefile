@@ -379,8 +379,12 @@ build-operator-bundle-image: check_container_runtime
 push-operator-bundle-image: build-operator-bundle-image
 	$(CONTAINER_CMD) push $(OPERATOR_BUNDLE_IMAGE)$(PLATFORM_SUFFIX)
 
+# The index build runs `opm render <bundle>` inside a RUN step. Buildkit RUN
+# steps are network-isolated, so a registry on the build host's localhost is
+# unreachable from inside the sandbox; host networking lets opm reach it. This
+# is benign for remote registries (the build host has internet either way).
 build-operator-index-image: check_container_runtime
-	$(CONTAINER_CMD) build $(PLATFORM_FLAG) $(BUILD_LABEL_ARGS) -t $(OPERATOR_INDEX_IMAGE)$(PLATFORM_SUFFIX) -f build/forklift-operator-index/Containerfile . \
+	$(CONTAINER_CMD) build --network=host $(PLATFORM_FLAG) $(BUILD_LABEL_ARGS) -t $(OPERATOR_INDEX_IMAGE)$(PLATFORM_SUFFIX) -f build/forklift-operator-index/Containerfile . \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg OPERATOR_BUNDLE_IMAGE=$(OPERATOR_BUNDLE_IMAGE)$(PLATFORM_SUFFIX) \
 		--build-arg CHANNELS=$(CHANNELS) \

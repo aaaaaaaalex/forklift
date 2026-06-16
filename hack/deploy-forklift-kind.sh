@@ -34,7 +34,9 @@
 # Environment variables (all optional):
 #   KUBECONFIG       Path to kubeconfig (default: $CALICO_REPO/hack/test/kind/kind-kubeconfig.yaml)
 #   FORKLIFT_REPO    Path to forklift repo (default: ~/go/src/github.com/kubev2v/forklift)
-#   REGISTRY         Image registry (default: docker.io)
+#   REGISTRY         Image registry (default: localhost:5000 — the local kind-registry
+#                    container; the kind nodes' containerd mirrors localhost:5000 to it,
+#                    so pushes stay on this machine and never hit a remote registry)
 #   REGISTRY_ORG     Image org/user (default: songtjiang)
 #   REGISTRY_TAG     Image tag (default: dev)
 #   PLATFORM         Target platform (default: linux/amd64)
@@ -49,12 +51,12 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "$0")"; pwd)
 
 # Try to find the calico repo root (parent of hack/).
-CALICO_REPO="${SCRIPT_DIR}/.."
+CALICO_REPO="/home/alex/Repositories/github.com/projectcalico/calico"
 
-: "${FORKLIFT_REPO:=${HOME}/go/src/github.com/kubev2v/forklift}"
-: "${KUBECONFIG:=${CALICO_REPO}/hack/test/kind/kind-kubeconfig.yaml}"
-: "${REGISTRY:=docker.io}"
-: "${REGISTRY_ORG:=songtjiang}"
+: "${FORKLIFT_REPO:=/home/alex/Repositories/github.com/kubev2v/forklift}"
+: "${KUBECONFIG:=/home/alex/Repositories/github.com/projectcalico/calico/hack/test/kind/kind-kubeconfig.yaml}"
+: "${REGISTRY:=localhost:5000}"
+: "${REGISTRY_ORG:=projectalexo}"
 : "${REGISTRY_TAG:=dev}"
 : "${PLATFORM:=linux/amd64}"
 : "${NAMESPACE:=konveyor-forklift}"
@@ -63,6 +65,14 @@ CALICO_REPO="${SCRIPT_DIR}/.."
 export KUBECONFIG
 
 MAKE_VARS="REGISTRY=${REGISTRY} REGISTRY_ORG=${REGISTRY_ORG} REGISTRY_TAG=${REGISTRY_TAG} PLATFORM=${PLATFORM}"
+
+# The operator-index build runs `opm render` against ${REGISTRY}. A local
+# registry (e.g. the kind-registry on localhost) serves plain HTTP, so opm
+# needs --use-http. Remote HTTPS registries must NOT get this flag, so gate it
+# on a localhost-style registry.
+case "${REGISTRY}" in
+    localhost*|127.0.0.1*) MAKE_VARS="${MAKE_VARS} OPM_OPTS=--use-http" ;;
+esac
 
 echo "=== Deploy Forklift on KIND ==="
 echo "  Calico repo:   ${CALICO_REPO}"

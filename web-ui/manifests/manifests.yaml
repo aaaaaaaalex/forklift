@@ -1,0 +1,176 @@
+# Forklift inventory web-UI.
+#
+# Deploys a single read-only pod that polls the Forklift inventory service with
+# its own ServiceAccount token and serves an unauthenticated dashboard to the
+# browser. Apply into the namespace where Forklift is installed.
+#
+#   kubectl apply -f manifests/manifests.yaml
+#   kubectl -n konveyor-forklift port-forward svc/forklift-inventory-ui 8080:8080
+#   open http://localhost:8080
+#
+# The image is built and pushed via ../Makefile (`make push`).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: forklift-inventory-ui
+  namespace: konveyor-forklift
+  labels:
+    app: forklift-inventory-ui
+---
+# The inventory service authorizes callers with a SubjectAccessReview against
+# `forklift.konveyor.io/providers`. Granting cluster-wide get/list on providers
+# lets this pod read the entire inventory (every provider in every namespace).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: forklift-inventory-ui-reader
+  labels:
+    app: forklift-inventory-ui
+rules:
+  - apiGroups: ["forklift.konveyor.io"]
+    resources: ["providers", "plans"]
+    verbs: ["get", "list", "watch"]
+  # Destination-side Calico view: read Network + IPPool CRDs to derive the
+  # NAD -> Network -> IPPool chain and per-VLAN pool eligibility errors.
+  - apiGroups: ["projectcalico.org"]
+    resources: ["networks", "ippools"]
+    verbs: ["get", "list", "watch"]
+  # KubeVirt live migrations + VMIs for the Live Migrations and destination
+  # VM -> VMI -> launcher pod views.
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachineinstancemigrations", "virtualmachineinstances"]
+    verbs: ["get", "list", "watch"]
+  # virt-launcher pods (the running VM resource) for the VM -> VMI -> pod chain.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: forklift-inventory-ui-reader
+  labels:
+    app: forklift-inventory-ui
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: forklift-inventory-ui-reader
+subjects:
+  - kind: ServiceAccount
+    name: forklift-inventory-ui
+    namespace: konveyor-forklift
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forklift-inventory-ui
+  namespace: konveyor-forklift
+  labels:
+    app: forklift-inventory-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: forklift-inventory-ui
+  template:
+    metadata:
+      labels:
+        app: forklift-inventory-ui
+    spec:
+      serviceAccountName: forklift-inventory-ui
+      containers:
+        - name: web-ui
+          image: docker.io/projectalexo/flui:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: INVENTORY_URL
+              value: "https://forklift-inventory.konveyor-forklift.svc.cluster.local:8443"
+            - name: POLL_INTERVAL
+              value: "30s"
+            - name: LISTEN_ADDR
+              value: ":8080"
+            # The inventory's serving cert is signed by the OpenShift service-ca.
+            # The openshift-service-ca.crt ConfigMap is auto-injected into every
+            # namespace; we mount it and verify against it.
+            - name: CA_FILE
+              value: "/etc/inventory-ca/service-ca.crt"
+            # On clusters where the inventory CA is not available here, set this
+            # to "true" to skip inventory TLS verification (in-cluster traffic).
+            - name: INSECURE_SKIP_VERIFY
+              value: "false"
+          volumeMounts:
+            - name: inventory-ca
+              mountPath: /etc/inventory-ca
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: inventory-ca
+          configMap:
+            name: openshift-service-ca.crt
+            optional: true
+            items:
+              - key: service-ca.crt
+                path: service-ca.crt
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forklift-inventory-ui
+  namespace: konveyor-forklift
+  labels:
+    app: forklift-inventory-ui
+spec:
+  # ClusterIP — a stable in-cluster service IP that can be port-forwarded:
+  #   kubectl -n konveyor-forklift port-forward svc/forklift-inventory-ui 8080:8080
+  type: ClusterIP
+  selector:
+    app: forklift-inventory-ui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+# Optional: expose externally on OpenShift. Uncomment to create a Route.
+# apiVersion: route.openshift.io/v1
+# kind: Route
+# metadata:
+#   name: forklift-inventory-ui
+#   namespace: konveyor-forklift
+#   labels:
+#     app: forklift-inventory-ui
+# spec:
+#   to:
+#     kind: Service
+#     name: forklift-inventory-ui
+#   port:
+#     targetPort: http
+#   tls:
+#     termination: edge
+

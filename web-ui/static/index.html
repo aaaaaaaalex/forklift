@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Forklift Inventory — topology</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">🚚</span>
+      <div>
+        <h1>Forklift Inventory</h1>
+        <div class="subtitle">interactive migration topology</div>
+      </div>
+    </div>
+    <div class="actions">
+      <label class="layout-toggle">
+        layout
+        <select id="layout">
+          <option value="dagre">hierarchical</option>
+          <option value="cose">force</option>
+          <option value="concentric">concentric</option>
+        </select>
+      </label>
+      <span id="status" class="status">loading…</span>
+      <button id="reload" title="Re-fetch the cached snapshot">↻ Reload</button>
+      <button id="repoll" class="secondary" title="Force the pod to poll the inventory now">⟳ Re-poll now</button>
+    </div>
+  </header>
+
+  <div id="app-grid" class="app">
+    <nav id="sidebar" class="sidebar"></nav>
+    <main id="cy" class="canvas"></main>
+    <aside id="detail" class="detail hidden"></aside>
+  </div>
+
+  <footer><span id="meta"></span></footer>
+
+  <!-- Vendored (no CDN), loaded before the module that uses them. cytoscape-dagre
+       reads the global `cytoscape` + `dagre` and auto-registers the dagre layout. -->
+  <script src="vendor/cytoscape.min.js"></script>
+  <script src="vendor/dagre.min.js"></script>
+  <script src="vendor/cytoscape-dagre.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+{
+  "name": "flui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Frontend for the Forklift inventory web-UI (flui) — interactive node-graph rendered with Cytoscape.js. Compiled by tsc into the static/ assets the Go backend embeds.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:watch": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "node --import tsx --test src/graph.test.ts",
+    "lint": "eslint src",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\"",
+    "clean": "rm -f static/app.js static/graph.js static/types.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.10.0",
+    "@types/node": "^20.14.0",
+    "eslint": "^9.10.0",
+    "prettier": "^3.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.6.0"
+  },
+  "dependencies": {
+    "agent-browser": "^0.27.1"
+  }
+}
